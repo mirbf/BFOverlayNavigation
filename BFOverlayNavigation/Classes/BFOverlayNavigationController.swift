@@ -612,52 +612,12 @@ open class BFOverlayNavigationController: UINavigationController {
 
         let navBar = navigationBar
         let safeFrame = navBar.safeAreaLayoutGuide.layoutFrame
-        let safeMidX = safeFrame.midX
-        let safeMidY = safeFrame.midY
-        let resolvedCenterY = resolvedOverlayContentCenterY(for: viewController)
 
         let backContainerInNav = overlayBackContainer.convert(overlayBackContainer.bounds, to: navBar)
         let backButtonInNav = overlayBackButton.convert(overlayBackButton.bounds, to: navBar)
         let rightContainerInNav = overlayRightContainer.convert(overlayRightContainer.bounds, to: navBar)
-        let rightFirstItemInNav = overlayRightStackView.arrangedSubviews.first?.convert(
-            overlayRightStackView.arrangedSubviews.first?.bounds ?? .zero,
-            to: navBar
-        )
-        let backContainerInHost = overlayBackContainer.convert(overlayBackContainer.bounds, to: overlayHostView)
-        let rightContainerInHost = overlayRightContainer.convert(overlayRightContainer.bounds, to: overlayHostView)
-        let backContainerInWindow = overlayBackContainer.window.map { overlayBackContainer.convert(overlayBackContainer.bounds, to: $0) }
-        let rightContainerInWindow = overlayRightContainer.window.map { overlayRightContainer.convert(overlayRightContainer.bounds, to: $0) }
-        let overlayHostInWindow = overlayHostView.window.map { overlayHostView.convert(overlayHostView.bounds, to: $0) }
 
         let titleFrameInNav = resolveTitleFrameInNavigationBar(for: viewController)
-        let titleFrameInWindow = viewController.navigationItem.titleView?.window.map {
-            viewController.navigationItem.titleView?.convert(viewController.navigationItem.titleView?.bounds ?? .zero, to: $0) ?? .zero
-        }
-        let statusBarHidden = currentStatusBarHidden()
-        let statusBarBottom = currentStatusBarBottom(statusBarHidden: statusBarHidden)
-        let rawStatusBarBottom = currentRawStatusBarBottom()
-        let contentLane = resolvedOverlayContentLaneRectInNavigationBar(for: viewController)
-        let windowSafeTop = viewIfLoaded?.window?.safeAreaInsets.top ?? 0
-        let navBarInWindow = viewIfLoaded?.window.map { navBar.convert(navBar.bounds, to: $0) }
-        let navBarOnScreen: Bool = {
-            guard let window = viewIfLoaded?.window, let navBarInWindow else { return false }
-            return isNavigationBarOnScreen(navBarInWindow, in: window)
-        }()
-
-        let backCenterDeltaY = overlayBackContainer.isHidden ? nil : backContainerInNav.midY - safeMidY
-        let titleCenterDeltaY = titleFrameInNav.map { $0.midY - safeMidY }
-        let rightCenterDeltaY = overlayRightContainer.isHidden ? nil : rightContainerInNav.midY - safeMidY
-        let backTitleCenterDeltaY: CGFloat? = {
-            guard !overlayBackContainer.isHidden, let titleFrameInNav else { return nil }
-            return backContainerInNav.midY - titleFrameInNav.midY
-        }()
-        let titleCenterDeltaX = titleFrameInNav.map { $0.midX - safeMidX }
-        let backGapToStatusBottom = navBarOnScreen ? backContainerInWindow.map { $0.minY - statusBarBottom } : nil
-        let titleGapToStatusBottom = navBarOnScreen ? titleFrameInWindow.map { $0.minY - statusBarBottom } : nil
-        let rightGapToStatusBottom = navBarOnScreen ? rightContainerInWindow.map { $0.minY - statusBarBottom } : nil
-        let backGapToWindowSafeTop = navBarOnScreen ? backContainerInWindow.map { $0.minY - windowSafeTop } : nil
-        let titleGapToWindowSafeTop = navBarOnScreen ? titleFrameInWindow.map { $0.minY - windowSafeTop } : nil
-        let rightGapToWindowSafeTop = navBarOnScreen ? rightContainerInWindow.map { $0.minY - windowSafeTop } : nil
 
         let signature = [
             formatRect(navBar.bounds),

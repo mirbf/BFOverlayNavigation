@@ -25,7 +25,7 @@ pod 'BFOverlayNavigation'
 ### From Git (SSH)
 
 ```ruby
-pod 'BFOverlayNavigation', :git => 'git@github.com:mirbf/BFOverlayNavigation.git', :tag => '0.1.1'
+pod 'BFOverlayNavigation', :git => 'git@github.com:mirbf/BFOverlayNavigation.git', :tag => '0.1.2'
 ```
 
 ### Local path (development)
