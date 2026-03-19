@@ -16,7 +16,8 @@ private final class BFOverlayPassthroughView: UIView {
 open class BFOverlayNavigationController: UINavigationController {
     public var onDidShowViewController: ((UIViewController) -> Void)?
     public var onRootLevelChanged: ((Bool) -> Void)?
-    public var navigationDebugLoggingEnabled: Bool = true
+    public var navigationDebugLoggingEnabled: Bool = false
+    public var navigationPerformanceLoggingEnabled: Bool = false
 
     private let overlayHostView = BFOverlayPassthroughView()
     private let overlayBackContainer = UIView()
@@ -30,6 +31,15 @@ open class BFOverlayNavigationController: UINavigationController {
     private var rightItemIdentifiers: [String] = []
     private var lastLayoutLogSignature: String?
     private let overlayImageViewTag = 990_001
+    private var pushBeginUptime: TimeInterval?
+    private var willShowBeginUptime: TimeInterval?
+    private var didShowBeginUptime: TimeInterval?
+    private var isPushInFlight = false
+    private var isTransitionInputBlocked = false
+    private var transitionInputTimeoutWorkItem: DispatchWorkItem?
+    private var transitionInputUnlockWorkItem: DispatchWorkItem?
+    private let transitionInputTimeout: TimeInterval = 2.0
+    private let didShowInputUnlockDelay: TimeInterval = 0.08
 
     open override func viewDidLoad() {
         super.viewDidLoad()
@@ -63,6 +73,23 @@ open class BFOverlayNavigationController: UINavigationController {
     }
 
     open override func pushViewController(_ viewController: UIViewController, animated: Bool) {
+        if isPushInFlight {
+            return
+        }
+        if let coordinator = transitionCoordinator, coordinator.isAnimated {
+            return
+        }
+
+        isPushInFlight = true
+        beginTransitionInputBlock(reason: "push开始 to=\(controllerName(viewController))")
+
+        let pushStart = ProcessInfo.processInfo.systemUptime
+        pushBeginUptime = pushStart
+        logPerf(
+            "动作=性能 来源=导航容器 事件=push入口 主线程=\(Thread.isMainThread) " +
+            "系统启动毫秒=\(uptimeMilliseconds()) 动画=\(animated) " +
+            "from=\(controllerName(topViewController)) to=\(controllerName(viewController)) 栈深=\(viewControllers.count)"
+        )
         if isNavigationBarHidden, !prefersNavigationBarHidden(for: viewController) {
             setNavigationBarHidden(false, animated: false)
             view.layoutIfNeeded()
@@ -81,9 +108,16 @@ open class BFOverlayNavigationController: UINavigationController {
 
         prepareOverlayIfNeeded(for: viewController, shouldShowBack: viewControllers.count >= 1)
         super.pushViewController(viewController, animated: animated)
+        logPerf(
+            "动作=性能 来源=导航容器 事件=push调用返回 主线程=\(Thread.isMainThread) " +
+            "耗时毫秒=\(elapsedMilliseconds(since: pushStart)) 动画=\(animated) to=\(controllerName(viewController))"
+        )
     }
 
     open override func popViewController(animated: Bool) -> UIViewController? {
+        if viewControllers.count > 1 {
+            beginTransitionInputBlock(reason: "pop开始")
+        }
         if viewControllers.count == 2, viewIfLoaded?.window != nil {
             onRootLevelChanged?(true)
         }
@@ -91,6 +125,9 @@ open class BFOverlayNavigationController: UINavigationController {
     }
 
     open override func popToRootViewController(animated: Bool) -> [UIViewController]? {
+        if viewControllers.count > 1 {
+            beginTransitionInputBlock(reason: "popToRoot开始")
+        }
         if viewControllers.count > 1, viewIfLoaded?.window != nil {
             onRootLevelChanged?(true)
         }
@@ -711,16 +748,104 @@ open class BFOverlayNavigationController: UINavigationController {
     private func formatSize(_ size: CGSize) -> String {
         String(format: "%.1fx%.1f", size.width, size.height)
     }
+
+    private func elapsedMilliseconds(since start: TimeInterval) -> Int {
+        Int((ProcessInfo.processInfo.systemUptime - start) * 1000)
+    }
+
+    private func elapsedMillisecondsSincePushBegin() -> Int {
+        guard let pushBeginUptime else { return -1 }
+        return elapsedMilliseconds(since: pushBeginUptime)
+    }
+
+    private func elapsedMillisecondsSinceWillShowBegin() -> Int {
+        guard let willShowBeginUptime else { return -1 }
+        return elapsedMilliseconds(since: willShowBeginUptime)
+    }
+
+    private func elapsedMillisecondsSinceDidShowBegin() -> Int {
+        guard let didShowBeginUptime else { return -1 }
+        return elapsedMilliseconds(since: didShowBeginUptime)
+    }
+
+    private func beginTransitionInputBlock(reason _: String) {
+        transitionInputTimeoutWorkItem?.cancel()
+        transitionInputUnlockWorkItem?.cancel()
+        transitionInputUnlockWorkItem = nil
+
+        if !isTransitionInputBlocked {
+            isTransitionInputBlocked = true
+            view.isUserInteractionEnabled = false
+        }
+
+        let timeoutWorkItem = DispatchWorkItem { [weak self] in
+            guard let self else { return }
+            guard self.isTransitionInputBlocked else { return }
+            self.isPushInFlight = false
+            self.isTransitionInputBlocked = false
+            self.view.isUserInteractionEnabled = true
+            self.transitionInputTimeoutWorkItem = nil
+            self.transitionInputUnlockWorkItem = nil
+        }
+        transitionInputTimeoutWorkItem = timeoutWorkItem
+        DispatchQueue.main.asyncAfter(deadline: .now() + transitionInputTimeout, execute: timeoutWorkItem)
+    }
+
+    private func finishTransitionInputBlock(reason _: String, delay: TimeInterval = 0) {
+        transitionInputTimeoutWorkItem?.cancel()
+        transitionInputTimeoutWorkItem = nil
+        transitionInputUnlockWorkItem?.cancel()
+
+        let unlockWorkItem = DispatchWorkItem { [weak self] in
+            guard let self else { return }
+            guard self.isTransitionInputBlocked else { return }
+            self.isTransitionInputBlocked = false
+            self.view.isUserInteractionEnabled = true
+            self.transitionInputUnlockWorkItem = nil
+        }
+        transitionInputUnlockWorkItem = unlockWorkItem
+
+        if delay > 0 {
+            DispatchQueue.main.asyncAfter(deadline: .now() + delay, execute: unlockWorkItem)
+        } else {
+            DispatchQueue.main.async(execute: unlockWorkItem)
+        }
+    }
+
+    private func controllerName(_ viewController: UIViewController?) -> String {
+        guard let viewController else { return "nil" }
+        return String(describing: type(of: viewController))
+    }
+
+    private func uptimeMilliseconds() -> Int {
+        Int(ProcessInfo.processInfo.systemUptime * 1000)
+    }
+
+    private func logPerf(_ message: String) {
+        #if DEBUG
+        guard navigationPerformanceLoggingEnabled else { return }
+        print("[图片工具] \(message)")
+        #endif
+    }
 }
 
 extension BFOverlayNavigationController: UINavigationControllerDelegate {
     public func navigationController(_ navigationController: UINavigationController, willShow viewController: UIViewController, animated: Bool) {
+        let willShowStart = ProcessInfo.processInfo.systemUptime
+        willShowBeginUptime = willShowStart
+        beginTransitionInputBlock(reason: "willShow vc=\(controllerName(viewController))")
+        logPerf(
+            "动作=性能 来源=导航容器 事件=willShow入口 主线程=\(Thread.isMainThread) " +
+            "系统启动毫秒=\(uptimeMilliseconds()) 动画=\(animated) vc=\(controllerName(viewController)) " +
+            "距push毫秒=\(elapsedMillisecondsSincePushBegin())"
+        )
         let shouldShowBack: Bool = {
             guard let index = navigationController.viewControllers.firstIndex(of: viewController) else {
                 return navigationController.viewControllers.count > 1
             }
             return index > 0
         }()
+        let overlayStart = ProcessInfo.processInfo.systemUptime
         performOverlayUpdatesWithoutAnimation {
             applyNavigationBarHiddenPreferenceIfNeeded(for: viewController)
             prepareOverlayIfNeeded(for: viewController, shouldShowBack: shouldShowBack)
@@ -728,10 +853,27 @@ extension BFOverlayNavigationController: UINavigationControllerDelegate {
             navigationController.view.layoutIfNeeded()
             performOverlayAlignmentPass(for: viewController)
         }
+        logPerf(
+            "动作=性能 来源=导航容器 事件=willShow覆盖层更新完成 主线程=\(Thread.isMainThread) " +
+            "耗时毫秒=\(elapsedMilliseconds(since: overlayStart)) vc=\(controllerName(viewController))"
+        )
         logNavigationLayoutIfNeeded(context: "willShow", viewController: viewController)
+        logPerf(
+            "动作=性能 来源=导航容器 事件=willShow完成 主线程=\(Thread.isMainThread) " +
+            "总耗时毫秒=\(elapsedMilliseconds(since: willShowStart)) vc=\(controllerName(viewController))"
+        )
     }
 
     public func navigationController(_ navigationController: UINavigationController, didShow viewController: UIViewController, animated: Bool) {
+        let didShowStart = ProcessInfo.processInfo.systemUptime
+        didShowBeginUptime = didShowStart
+        isPushInFlight = false
+        logPerf(
+            "动作=性能 来源=导航容器 事件=didShow入口 主线程=\(Thread.isMainThread) " +
+            "系统启动毫秒=\(uptimeMilliseconds()) 动画=\(animated) vc=\(controllerName(viewController)) " +
+            "距push毫秒=\(elapsedMillisecondsSincePushBegin()) 距willShow毫秒=\(elapsedMillisecondsSinceWillShowBegin())"
+        )
+        let overlayStart = ProcessInfo.processInfo.systemUptime
         performOverlayUpdatesWithoutAnimation {
             applyNavigationBarHiddenPreferenceIfNeeded(for: viewController)
             prepareOverlayIfNeeded(for: viewController, shouldShowBack: viewControllers.count > 1)
@@ -739,18 +881,34 @@ extension BFOverlayNavigationController: UINavigationControllerDelegate {
             navigationController.view.layoutIfNeeded()
             performOverlayAlignmentPass(for: viewController)
         }
+        logPerf(
+            "动作=性能 来源=导航容器 事件=didShow覆盖层更新完成 主线程=\(Thread.isMainThread) " +
+            "耗时毫秒=\(elapsedMilliseconds(since: overlayStart)) vc=\(controllerName(viewController))"
+        )
         logNavigationLayoutIfNeeded(context: "didShow", viewController: viewController)
         notifyRootLevel()
         onDidShowViewController?(viewController)
+        logPerf(
+            "动作=性能 来源=导航容器 事件=didShow完成 主线程=\(Thread.isMainThread) " +
+            "总耗时毫秒=\(elapsedMilliseconds(since: didShowStart)) vc=\(controllerName(viewController)) " +
+            "距push毫秒=\(elapsedMillisecondsSincePushBegin())"
+        )
+        finishTransitionInputBlock(reason: "didShow vc=\(controllerName(viewController))", delay: didShowInputUnlockDelay)
 
         DispatchQueue.main.async { [weak self, weak viewController] in
             guard let self, let viewController else { return }
             guard self.topViewController === viewController else { return }
+            let deferredStart = ProcessInfo.processInfo.systemUptime
             self.performOverlayUpdatesWithoutAnimation {
                 self.view.layoutIfNeeded()
                 self.performOverlayAlignmentPass(for: viewController)
             }
             self.logNavigationLayoutIfNeeded(context: "didShowDeferred", viewController: viewController)
+            self.logPerf(
+                "动作=性能 来源=导航容器 事件=didShow延迟对齐完成 主线程=\(Thread.isMainThread) " +
+                "耗时毫秒=\(self.elapsedMilliseconds(since: deferredStart)) vc=\(self.controllerName(viewController)) " +
+                "距didShow毫秒=\(self.elapsedMillisecondsSinceDidShowBegin()) 距push毫秒=\(self.elapsedMillisecondsSincePushBegin())"
+            )
         }
     }
 }
